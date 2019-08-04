@@ -14,27 +14,27 @@ By using technique call hole-punching, we redesign the garbage collection (GC) p
 
 ### Write amplification in TiKV
 
-As a distributed transactional key-value database, TiKV use raft consensus protocol to provide high available and use RocksDB as the underlying storage engine. While these components work fine 
-togather and provide high performence, there still have a problem that reduce IO throughout and consume CPU and disk resource, that is the write amplification problem. As our observed, while 
+As a distributed transactional key-value database, TiKV uses raft consensus protocol to provide high available and uses RocksDB as its underlying storage engine. While these components work fine 
+togather and provide high performence, there still is a problem which lead to reducing IO throughout and consuming CPU and disk resource, that is the write amplification problem. According to our observision, during 
 writing key-value pairs to TiKV, write amplification happen in the following places: 
 
-- Raft logs. In raft consensus protocol a peer must first persist the raft logs after received a raft logs, and when these logs had committed later, a peer also need to apply these log to its state machine, in TiKV that procedure will be write to RocksDB.
-- Write ahead log to level 0 SSTable. When RocksDB received a update operation it first write that operation to its write ahead log, and later when it flush memtable to disk, it will again need to write (some of) these operation to the level 0 SSTables.
+- Raft logs. In raft consensus protocol a peer must first persist the raft logs after received a raft logs, and when these logs had been committed later, a peer also need to apply these logs to its state machine, in TiKV that procedure will be write to RocksDB.
+- Write ahead log to level 0 SSTable. When RocksDB received a update operation, it first writes that operation to its write ahead log, and later when it flush memtable to disk, it will again need to write (some of) these operations to the level 0 SSTables.
 - LSM tree compaction. Within LSM tree, SSTables are organized as many levels, when a SSTables from upper level flow to lower level, the SSTables in lower level whose key range are overlap with that SSTable, will need to read, merge sort and write back again to disk.
 
 As persist raft logs is part of the raft consensus protocol to provide its correctness, it is a bit hard to remove or improve write amplification on it. But in LSM tree, as its widely use to 
-build storage engine, there are so many efforts had been made to reduce write amplification on LSM tree, and so far we had readed some papers on this feild:
+build storage engine, there are so many efforts had been made to reduce write amplification on LSM tree, and so far we had read some papers on this feild:
 
 - Key value separation: WiscKey, HashKV.
 - Delay compaction: PebblesDB, dCompaction, TRIAD-DISK in TRIAD, Universal compaction (build-in on RocksDB).
 - Hot cold separation: TRIAD-MEM in TRIAD, HashKV.
 - Transform WAL into SSTable: TRIAD-LOG in TRIAD.
 
-Although RocksDB export rich interfaces and tuning parameters to allow user to customize RocksDB's behaviour, it is still so hard to implement some ideas above by using RocksDB's interface without modified its internal and that is a non-trivial work.
+Although RocksDB exports rich interfaces and tuning parameters to allow user to customize RocksDB's behaviour, it is still so hard to implement some ideas above by using RocksDB's interface without modified its internal and that is a non-trivial work.
 
 Instead, as we know, Titan is a RocksDB plugin implement by using RocksDB's interface, inspired by WiscKey for key-value separation, which aims to reduce write amplification in RocksDB with large values when compaction.
 
-Titan uses a value storage for large values, and need to periodic garbage collection (GC) to reclaim space occupied by stale value in the blob file. But during garbage collection (GC), it merges the valid data in the blob files and writes it to disk on new blob files, and also writing the new location information for those valid records back to LSM tree.
+Titan uses a value storage for large values, and need to periodically garbage collection (GC) to reclaim space occupied by stale value in the blob file. But during garbage collection (GC), it merges the valid data in the blob files and writes it to disk on new blob files, and also writing the new location information for those valid records back to LSM tree.
 
 And this introduces new write amplification: Even if some records are valid, we need to rewrite them to disk. In other words, though Titan reduces write amplification of the LSM tree by reducing the size of the LSM tree, it introduces new write amplification at the time of GC. We tried to reduce the write operations on disk to reduce this write amplification.
 
